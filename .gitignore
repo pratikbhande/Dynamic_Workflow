@@ -1,0 +1,35 @@
+### `.gitignore`
+```
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Data
+data/
+*.db
+*.sqlite
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Poetry
+poetry.lock
+
+# OS
+.DS_Store
+Thumbs.db
