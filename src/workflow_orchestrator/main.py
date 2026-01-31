@@ -4,7 +4,9 @@ from contextlib import asynccontextmanager
 
 from .config import settings
 from .infrastructure.database.mongodb import get_mongodb
-from .api.routes import workflows_router, executions_router
+
+from .api.routes.workflows import router as workflows_router
+from .api.routes.executions import router as executions_router
 from .api.routes.files import router as files_router
 
 @asynccontextmanager
@@ -32,9 +34,6 @@ async def lifespan(app: FastAPI):
     print(f"\n{'='*60}")
     print(f"👋 Shutting down {settings.APP_NAME}")
     print(f"{'='*60}\n")
-    
-    db = await get_mongodb()
-    await db.disconnect()
 
 # Create FastAPI app
 app = FastAPI(
@@ -53,7 +52,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
+# Include routers - FIXED
 app.include_router(workflows_router)
 app.include_router(executions_router)
 app.include_router(files_router)

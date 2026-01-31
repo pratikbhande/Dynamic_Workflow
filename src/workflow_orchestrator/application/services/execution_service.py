@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, List
 from ...domain.models import WorkflowGraph, ExecutionContext
 from ...domain.services.dependency_resolver import DependencyResolver
 from ...infrastructure.agents.agent_executor import DynamicAgentExecutor

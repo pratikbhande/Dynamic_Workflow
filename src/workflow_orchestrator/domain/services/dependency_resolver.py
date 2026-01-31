@@ -1,42 +1,54 @@
 from typing import List, Dict, Any, Set
 from collections import defaultdict, deque
 
+
 class DependencyResolver:
-    """Resolves agent dependencies and determines execution order"""
+    """Resolves dependencies between agents and determines execution order"""
     
-    def topological_sort(self, agents: List[Dict[str, Any]], edges: List[Dict[str, Any]]) -> List[List[str]]:
+    def topological_sort(
+        self,
+        agents: List[Dict[str, Any]],
+        edges: List[Dict[str, Any]]
+    ) -> List[List[str]]:
         """
-        Perform topological sort to determine execution order
+        Perform topological sort to determine execution levels
         
-        Returns:
-            List of execution levels, where each level contains agent IDs that can run in parallel
+        Returns: List of lists, where each inner list contains agent IDs
+                that can be executed in parallel
         """
         
-        # Build adjacency list and in-degree map
-        adj_list = defaultdict(list)
-        in_degree = {agent["id"]: 0 for agent in agents}
+        # Build adjacency list and in-degree count
+        graph = defaultdict(list)
+        in_degree = defaultdict(int)
         
+        # Initialize all agents with in-degree 0
+        for agent in agents:
+            in_degree[agent["id"]] = 0
+        
+        # Build graph from edges
         for edge in edges:
-            from_agent = edge["from"]
-            to_agent = edge["to"]
-            adj_list[from_agent].append(to_agent)
+            # Handle both field name formats
+            from_agent = edge.get("from_agent") or edge.get("from")
+            to_agent = edge.get("to_agent") or edge.get("to")
+            
+            graph[from_agent].append(to_agent)
             in_degree[to_agent] += 1
         
-        # Find all agents with no dependencies (in-degree = 0)
+        # Find all nodes with in-degree 0
         queue = deque([agent_id for agent_id, degree in in_degree.items() if degree == 0])
         
-        execution_levels = []
+        levels = []
         
         while queue:
-            # All agents in current queue can execute in parallel
+            # All agents in current level can execute in parallel
             current_level = list(queue)
-            execution_levels.append(current_level)
+            levels.append(current_level)
             
             # Process current level
             next_queue = deque()
             for agent_id in current_level:
-                # Reduce in-degree for all dependent agents
-                for neighbor in adj_list[agent_id]:
+                # Remove this agent and update in-degrees
+                for neighbor in graph[agent_id]:
                     in_degree[neighbor] -= 1
                     if in_degree[neighbor] == 0:
                         next_queue.append(neighbor)
@@ -44,37 +56,46 @@ class DependencyResolver:
             queue = next_queue
         
         # Check for cycles
-        total_sorted = sum(len(level) for level in execution_levels)
-        if total_sorted < len(agents):
-            raise ValueError("Circular dependency detected in workflow!")
+        if sum(len(level) for level in levels) != len(agents):
+            raise ValueError("Circular dependency detected in workflow")
         
-        return execution_levels
+        return levels
     
-    def validate_workflow(self, agents: List[Dict[str, Any]], edges: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Validate workflow for correctness"""
+    def validate_workflow(
+        self,
+        agents: List[Dict[str, Any]],
+        edges: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Validate workflow structure"""
         
-        agent_ids = {agent["id"] for agent in agents}
         errors = []
         warnings = []
         
+        agent_ids = {agent["id"] for agent in agents}
+        
         # Check edge references
         for edge in edges:
-            if edge["from"] not in agent_ids:
-                errors.append(f"Edge references unknown agent: {edge['from']}")
-            if edge["to"] not in agent_ids:
-                errors.append(f"Edge references unknown agent: {edge['to']}")
+            from_agent = edge.get("from_agent") or edge.get("from")
+            to_agent = edge.get("to_agent") or edge.get("to")
+            
+            if from_agent not in agent_ids:
+                errors.append(f"Edge references unknown agent: {from_agent}")
+            if to_agent not in agent_ids:
+                errors.append(f"Edge references unknown agent: {to_agent}")
         
         # Check for isolated agents
         connected_agents = set()
         for edge in edges:
-            connected_agents.add(edge["from"])
-            connected_agents.add(edge["to"])
+            from_agent = edge.get("from_agent") or edge.get("from")
+            to_agent = edge.get("to_agent") or edge.get("to")
+            connected_agents.add(from_agent)
+            connected_agents.add(to_agent)
         
         isolated = agent_ids - connected_agents
-        if len(isolated) > 1:  # More than just the starting agent
-            warnings.append(f"Isolated agents (not connected): {isolated}")
+        if isolated and len(agents) > 1:
+            warnings.append(f"Isolated agents (no connections): {isolated}")
         
-        # Try topological sort to check for cycles
+        # Check for cycles
         try:
             self.topological_sort(agents, edges)
         except ValueError as e:
