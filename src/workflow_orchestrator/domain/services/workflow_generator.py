@@ -68,30 +68,14 @@ class WorkflowGenerator:
             for file_id in file_ids:
                 file_record = await db.get_collection("files").find_one({"id": file_id})
                 if file_record:
-                    files_data.append({
-                        "file_id": file_record["id"],
-                        "filename": file_record["original_filename"],
-                        "type": file_record["file_type"],
-                        "path": file_record["file_path"],
-                        "processed_data": file_record["processed_data"],
-                        "text_content": file_record["text_content"][:2000],  # Preview
-                        "full_text_available": True
-                    })
+                    files_data.append(self._format_file_for_context(file_record))
         else:
             # Get all user files
             cursor = db.get_collection("files").find({"user_id": user_id})
             all_files = await cursor.to_list(length=50)
             
             for file_record in all_files:
-                files_data.append({
-                    "file_id": file_record["id"],
-                    "filename": file_record["original_filename"],
-                    "type": file_record["file_type"],
-                    "path": file_record["file_path"],
-                    "processed_data": file_record["processed_data"],
-                    "text_content": file_record["text_content"][:2000],
-                    "full_text_available": True
-                })
+                files_data.append(self._format_file_for_context(file_record))
         
         # Available tools and capabilities
         context = {
@@ -147,6 +131,21 @@ class WorkflowGenerator:
         
         return context
     
+    def _format_file_for_context(self, file_record: Dict[str, Any]) -> Dict[str, Any]:
+        """Format a file record for workflow generation context"""
+        
+        formatted = {
+            "file_id": file_record["id"],
+            "filename": file_record["original_filename"],
+            "type": file_record["file_type"],
+            "path": file_record["file_path"],
+            "processed_data": file_record["processed_data"],
+            "text_content": file_record["text_content"][:2000],
+            "full_text_available": True
+        }
+        
+        return formatted
+    
     def _get_enhanced_system_prompt(self, context: Dict[str, Any]) -> str:
         """Generate system prompt with complete context"""
         
@@ -157,24 +156,40 @@ class WorkflowGenerator:
             file_str += f"\n  Type: {file['type']}"
             file_str += f"\n  Path: {file['path']}"
             
-            if file['type'] in ['.xlsx', '.xls', '.csv']:
-                data = file['processed_data']
-                if 'sheets' in data:
-                    # Excel with multiple sheets
-                    for sheet_name, sheet_data in data['sheets'].items():
-                        file_str += f"\n  Sheet '{sheet_name}':"
-                        file_str += f"\n    Columns: {', '.join(sheet_data['columns'])}"
-                        file_str += f"\n    Rows: {sheet_data['summary']['total_rows']}"
-                        file_str += f"\n    Sample Data: {json.dumps(sheet_data['rows'][:3], indent=6)}"
-                elif 'data' in data:
-                    # CSV
-                    file_str += f"\n  Columns: {', '.join(data['data']['columns'])}"
-                    file_str += f"\n  Rows: {data['data']['summary']['total_rows']}"
-                    file_str += f"\n  Sample Data: {json.dumps(data['data']['rows'][:3], indent=4)}"
+            processed_data = file.get('processed_data', {})
             
-            elif file['type'] == '.pdf':
-                file_str += f"\n  Pages: {file['processed_data']['data']['total_pages']}"
-                file_str += f"\n  Content Preview: {file['text_content'][:300]}..."
+            # Handle Excel files
+            if file['type'] in ['.xlsx', '.xls'] and 'sheets' in processed_data:
+                for sheet_name, sheet_data in processed_data['sheets'].items():
+                    file_str += f"\n  Sheet '{sheet_name}':"
+                    file_str += f"\n    Columns: {', '.join(sheet_data.get('columns', []))}"
+                    file_str += f"\n    Rows: {sheet_data.get('summary', {}).get('total_rows', 0)}"
+                    
+                    # Show sample data
+                    sample_rows = sheet_data.get('rows', [])[:3]
+                    if sample_rows:
+                        file_str += f"\n    Sample Data: {json.dumps(sample_rows[:2], indent=6)}"
+            
+            # Handle CSV files
+            elif file['type'] == '.csv' and 'data' in processed_data:
+                data = processed_data['data']
+                file_str += f"\n  Columns: {', '.join(data.get('columns', []))}"
+                file_str += f"\n  Rows: {data.get('summary', {}).get('total_rows', 0)}"
+                
+                # Show sample data
+                sample_rows = data.get('rows', [])[:3]
+                if sample_rows:
+                    file_str += f"\n  Sample Data: {json.dumps(sample_rows[:2], indent=4)}"
+            
+            # Handle PDF files
+            elif file['type'] == '.pdf' and 'data' in processed_data:
+                pdf_data = processed_data.get('data', {})
+                file_str += f"\n  Pages: {pdf_data.get('total_pages', 0)}"
+                
+                # Show text preview
+                text_preview = file.get('text_content', '')[:300]
+                if text_preview:
+                    file_str += f"\n  Content Preview: {text_preview}..."
             
             files_info.append(file_str)
         
@@ -220,40 +235,11 @@ AGENT TYPES & TEMPLATES:
    - Use when: Need to load and process Excel/CSV files
    - Tools: python_executor, filesystem
    - Prompt must include: Exact file path, column names, pandas code
-   - Example prompt structure:
-     "CONTEXT:
-      - File: /data/uploads/file_123.xlsx
-      - Columns: [actual column names]
-      
-      TASK:
-      Execute this Python code:
-```python
-      import pandas as pd
-      import json
-      
-      df = pd.read_excel('/data/uploads/file_123.xlsx')
-      # [specific calculations with real column names]
-      result = {...}
-      print(json.dumps(result))
-```
-      
-      OUTPUT: JSON with structure {...}"
 
 2. rag_builder
    - Use when: Need to index documents for semantic search
    - Tools: chromadb or faiss, filesystem
    - Prompt must include: File path, chunking strategy, metadata
-   - Example:
-     "CONTEXT:
-      - PDF: /data/uploads/file_124.pdf
-      
-      TASK:
-      1. Read PDF using 'read_file' tool
-      2. Split into chunks (500 chars each)
-      3. Create ChromaDB collection 'feedback_index'
-      4. Add chunks with metadata: {page, chunk_id}
-      
-      OUTPUT: Collection name and document count"
 
 3. analyzer
    - Use when: Need to analyze data from previous agent
@@ -265,6 +251,7 @@ AGENT TYPES & TEMPLATES:
    - Tools: filesystem, slack (optional)
    - Prompt must include: Input structure, output format
 
+# Find this section and replace:
 OUTPUT JSON FORMAT:
 {{
   "workflow_name": "Descriptive name",
@@ -290,7 +277,7 @@ OUTPUT JSON FORMAT:
     }}
   ],
   "edges": [
-    {{"from": "agent_1", "to": "agent_2", "data_key": "calculations"}}
+    {{"from_agent": "agent_1", "to_agent": "agent_2", "data_key": "output_key"}}
   ]
 }}
 

@@ -1,8 +1,8 @@
 from typing import Dict, Any, List
 from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, create_openai_functions_agent
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.tools import Tool
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tools import Tool
+from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
 import json
 
 from ..tools.tool_registry import ToolRegistry
@@ -11,6 +11,7 @@ from ..tools.tool_implementations.code_executor_tools import create_code_executo
 from ..tools.tool_implementations.file_tools import create_file_tools
 from ..tools.tool_implementations.mcp_tools import create_mcp_tools
 from ...config import settings
+
 
 class DynamicAgentExecutor:
     """Executes individual agents with dynamically provisioned tools and full context"""
@@ -23,86 +24,58 @@ class DynamicAgentExecutor:
         agent_config: Dict[str, Any],
         input_data: Any
     ) -> Dict[str, Any]:
-        """
-        Execute a single agent with full context
-        
-        Args:
-            agent_config: Agent configuration from workflow
-            input_data: Input data including files and previous agent outputs
-        
-        Returns:
-            Agent output with metadata
-        """
+        """Execute a single agent with full context"""
         
         print(f"\n{'='*60}")
         print(f"🤖 Executing Agent: {agent_config['name']}")
         print(f"   Type: {agent_config['type']}")
         print(f"{'='*60}")
         
-        # 1. Provision tools
-        provisioned_tools = await self._provision_tools(
-            agent_id=agent_config["id"],
-            required_tools=agent_config.get("required_tools", [])
-        )
-        
-        # 2. Create LangChain tools
-        langchain_tools = await self._create_langchain_tools(provisioned_tools)
-        
-        print(f"   Tools available: {len(langchain_tools)}")
-        for tool in langchain_tools:
-            print(f"     - {tool.name}")
-        
-        # 3. Prepare comprehensive input
-        agent_input = self._prepare_comprehensive_input(agent_config, input_data)
-        
-        print(f"\n   Input prepared:")
-        print(f"     Files: {len(input_data.get('files', []))}")
-        if 'input_from_' in str(input_data):
-            print(f"     Previous outputs: Yes")
-        
-        # 4. Create agent with detailed prompt
-        llm = ChatOpenAI(
-            api_key=settings.OPENAI_API_KEY,
-            model="gpt-4-turbo",
-            temperature=0.7
-        )
-        
-        # Create prompt that includes the detailed_prompt from workflow
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", agent_config["detailed_prompt"]),
-            ("human", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad")
-        ])
-        
-        agent = create_openai_functions_agent(llm, langchain_tools, prompt)
-        agent_executor = AgentExecutor(
-            agent=agent,
-            tools=langchain_tools,
-            verbose=True,
-            max_iterations=15,
-            handle_parsing_errors=True
-        )
-        
-        # 5. Execute
         try:
-            print(f"\n   🔄 Executing agent...\n")
+            # 1. Provision tools
+            provisioned_tools = await self._provision_tools(
+                agent_id=agent_config["id"],
+                required_tools=agent_config.get("required_tools", [])
+            )
             
-            result = await agent_executor.ainvoke({"input": agent_input})
-            output = result["output"]
+            # 2. Create LangChain tools
+            langchain_tools = await self._create_langchain_tools(provisioned_tools)
             
-            # Try to parse JSON output if it looks like JSON
-            parsed_output = output
-            if isinstance(output, str):
-                output_stripped = output.strip()
-                if output_stripped.startswith('{') or output_stripped.startswith('['):
-                    try:
-                        parsed_output = json.loads(output_stripped)
-                    except json.JSONDecodeError:
-                        # Not valid JSON, keep as string
-                        pass
+            print(f"   Tools available: {len(langchain_tools)}")
+            for tool in langchain_tools:
+                print(f"     - {tool.name}")
+            
+            # 3. Prepare comprehensive input
+            agent_input = self._prepare_comprehensive_input(agent_config, input_data)
+            
+            print(f"\n   Input prepared:")
+            print(f"     Files: {len(input_data.get('files', []))}")
+            
+            # 4. Create LLM
+            llm = ChatOpenAI(
+                api_key=settings.OPENAI_API_KEY,
+                model="gpt-4-turbo",
+                temperature=0.7
+            )
+            
+            # 5. Execute agent
+            if langchain_tools:
+                output = await self._execute_with_tools(
+                    llm, langchain_tools, agent_config, agent_input
+                )
+            else:
+                output = await self._execute_without_tools(
+                    llm, agent_config, agent_input
+                )
+            
+            # 6. Parse output
+            parsed_output = self._parse_output(output)
             
             print(f"\n   ✅ Agent completed successfully")
             print(f"   Output preview: {str(parsed_output)[:200]}...")
+            
+            # 7. Cleanup
+            await self.tool_registry.cleanup_tools(provisioned_tools)
             
             return {
                 "agent_id": agent_config["id"],
@@ -112,6 +85,8 @@ class DynamicAgentExecutor:
             
         except Exception as e:
             print(f"\n   ❌ Agent failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
             
             return {
                 "agent_id": agent_config["id"],
@@ -119,10 +94,146 @@ class DynamicAgentExecutor:
                 "status": "failed",
                 "error": str(e)
             }
+    
+    async def _execute_with_tools(
+        self,
+        llm: ChatOpenAI,
+        tools: List[Tool],
+        agent_config: Dict[str, Any],
+        agent_input: str
+    ) -> str:
+        """Execute agent with tools using tool calling"""
         
-        finally:
-            # 6. Cleanup
-            await self.tool_registry.cleanup_tools(provisioned_tools)
+        print(f"\n   🔄 Executing agent with {len(tools)} tools...\n")
+        
+        # Create simple prompt for tool calling agent
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", agent_config["detailed_prompt"]),
+            ("human", "{input}"),
+            ("placeholder", "{agent_scratchpad}")
+        ])
+        
+        try:
+            # Try tool calling agent (modern approach)
+            agent = create_tool_calling_agent(llm, tools, prompt)
+            
+            agent_executor = AgentExecutor(
+                agent=agent,
+                tools=tools,
+                verbose=True,
+                max_iterations=15,
+                handle_parsing_errors=True
+            )
+            
+            result = await agent_executor.ainvoke({"input": agent_input})
+            return result.get("output", str(result))
+            
+        except Exception as e:
+            print(f"   ⚠️  Tool calling failed: {e}")
+            print(f"   Falling back to direct LLM with tool descriptions...")
+            
+            # Fallback: Direct LLM call with tool descriptions
+            return await self._execute_with_tool_descriptions(
+                llm, tools, agent_config, agent_input
+            )
+    
+    async def _execute_with_tool_descriptions(
+        self,
+        llm: ChatOpenAI,
+        tools: List[Tool],
+        agent_config: Dict[str, Any],
+        agent_input: str
+    ) -> str:
+        """Fallback: Execute with tool descriptions but no actual tool calling"""
+        
+        # Build tool descriptions
+        tools_desc = "\n\n".join([
+            f"Tool: {tool.name}\nDescription: {tool.description}"
+            for tool in tools
+        ])
+        
+        # Create enhanced prompt
+        full_prompt = f"""{agent_config["detailed_prompt"]}
+
+AVAILABLE TOOLS:
+{tools_desc}
+
+Note: You can reference these tools in your code or response, but execute the logic directly.
+
+INPUT:
+{agent_input}
+
+Provide your complete response:
+"""
+        
+        response = await llm.ainvoke([("human", full_prompt)])
+        return response.content
+    
+    async def _execute_without_tools(
+        self,
+        llm: ChatOpenAI,
+        agent_config: Dict[str, Any],
+        agent_input: str
+    ) -> str:
+        """Execute with simple LLM call (no tools)"""
+        
+        print(f"\n   🔄 Executing with LLM (no tools)...\n")
+        
+        messages = [
+            ("system", agent_config["detailed_prompt"]),
+            ("human", agent_input)
+        ]
+        
+        response = await llm.ainvoke(messages)
+        return response.content
+    
+    def _parse_output(self, output: str) -> Any:
+        """Parse output, try to convert to JSON if possible"""
+        
+        if not isinstance(output, str):
+            return output
+        
+        output_stripped = output.strip()
+        
+        # Try to parse as JSON
+        if output_stripped.startswith('{') or output_stripped.startswith('['):
+            try:
+                return json.loads(output_stripped)
+            except json.JSONDecodeError:
+                pass
+        
+        # Try to extract JSON from markdown code blocks
+        if '```json' in output_stripped:
+            try:
+                json_start = output_stripped.index('```json') + 7
+                json_end = output_stripped.index('```', json_start)
+                json_str = output_stripped[json_start:json_end].strip()
+                return json.loads(json_str)
+            except (ValueError, json.JSONDecodeError):
+                pass
+        
+        # Try to extract Python code blocks and execute
+        if '```python' in output_stripped and 'python_executor' in str(output_stripped):
+            try:
+                code_start = output_stripped.index('```python') + 9
+                code_end = output_stripped.index('```', code_start)
+                code = output_stripped[code_start:code_end].strip()
+                
+                # Execute the code
+                print(f"\n   🐍 Executing extracted Python code...")
+                from ..tools.tool_implementations.code_executor_tools import create_code_executor_tool
+                executor = create_code_executor_tool()
+                result = executor.func(code)
+                
+                # Try to parse result as JSON
+                try:
+                    return json.loads(result.split("Code executed successfully:\n")[-1])
+                except:
+                    return result
+            except Exception as e:
+                print(f"   ⚠️  Code execution failed: {e}")
+        
+        return output
     
     async def _provision_tools(
         self,
@@ -169,7 +280,6 @@ class DynamicAgentExecutor:
                     tools.extend(mcp_tools)
                 
                 elif prov_tool.get("spec", {}).get("name") == "filesystem":
-                    # Add file tools
                     file_tools = await create_file_tools()
                     tools.extend(file_tools)
             
@@ -183,14 +293,7 @@ class DynamicAgentExecutor:
         agent_config: Dict[str, Any],
         input_data: Any
     ) -> str:
-        """
-        Prepare comprehensive input text for agent
-        
-        Includes:
-        - Files information (paths, columns, data)
-        - Previous agent outputs
-        - Task description
-        """
+        """Prepare comprehensive input text for agent"""
         
         input_parts = []
         

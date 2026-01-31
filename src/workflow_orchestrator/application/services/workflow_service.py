@@ -1,6 +1,6 @@
 from typing import Dict, Any, List
 from ...domain.services.workflow_generator import WorkflowGenerator
-from ...domain.models import WorkflowGraph
+from ...domain.models import WorkflowGraph, AgentNode, Edge, ToolRequirement
 from ...infrastructure.database.mongodb import get_mongodb
 from datetime import datetime
 import uuid
@@ -15,7 +15,7 @@ class WorkflowService:
         self,
         user_id: str,
         task_description: str,
-        file_ids: List[str] = None  # NEW: Specific files to use
+        file_ids: List[str] = None
     ) -> WorkflowGraph:
         """Generate workflow from task description with file context"""
         
@@ -30,20 +30,43 @@ class WorkflowService:
             file_ids=file_ids
         )
         
+        # Normalize edges format
+        normalized_edges = []
+        for edge in workflow_dict.get("edges", []):
+            # Handle both formats
+            normalized_edge = {
+                "from_agent": edge.get("from_agent") or edge.get("from"),
+                "to_agent": edge.get("to_agent") or edge.get("to"),
+                "data_key": edge.get("data_key", "output")
+            }
+            normalized_edges.append(normalized_edge)
+        
         # Create WorkflowGraph model
         workflow = WorkflowGraph(
             id=f"wf_{uuid.uuid4().hex[:12]}",
             user_id=user_id,
             name=workflow_dict["workflow_name"],
             description=workflow_dict["description"],
-            agents=workflow_dict["agents"],
-            edges=workflow_dict["edges"],
+            agents=[AgentNode(**agent) for agent in workflow_dict["agents"]],
+            edges=[Edge(**edge) for edge in normalized_edges],
             status="draft"
         )
         
-        # Save to database
+        # Save to database (convert to dict for MongoDB)
         db = await get_mongodb()
-        await db.get_collection("workflows").insert_one(workflow.model_dump())
+        workflow_data = workflow.model_dump()
+        
+        # Ensure edges are in correct format for storage
+        workflow_data["edges"] = [
+            {
+                "from_agent": edge.from_agent,
+                "to_agent": edge.to_agent,
+                "data_key": edge.data_key
+            }
+            for edge in workflow.edges
+        ]
+        
+        await db.get_collection("workflows").insert_one(workflow_data)
         
         print(f"✅ Workflow generated: {workflow.id}")
         print(f"   Agents: {len(workflow.agents)}")
@@ -57,6 +80,10 @@ class WorkflowService:
         
         if not workflow_dict:
             raise ValueError(f"Workflow {workflow_id} not found")
+        
+        # Remove MongoDB _id
+        if '_id' in workflow_dict:
+            del workflow_dict['_id']
         
         return WorkflowGraph(**workflow_dict)
     
@@ -79,26 +106,20 @@ class WorkflowService:
     ) -> WorkflowGraph:
         """Modify workflow based on user feedback"""
         
-        # Get existing workflow
         workflow = await self.get_workflow(workflow_id)
-        
-        # Use LLM to modify
-        from ...domain.services.workflow_generator import WorkflowGenerator
-        generator = WorkflowGenerator()
         
         # Get files from original workflow
         db = await get_mongodb()
         file_ids = []
         
-        # Extract file IDs from agent prompts (simple extraction)
+        # Extract file IDs from agent prompts
         for agent in workflow.agents:
             if "file_id" in agent.detailed_prompt:
-                # Extract file IDs from prompt
                 import re
                 matches = re.findall(r'file_[a-z0-9]+', agent.detailed_prompt)
                 file_ids.extend(matches)
         
-        file_ids = list(set(file_ids))  # Unique
+        file_ids = list(set(file_ids))
         
         # Regenerate with modifications
         modification_prompt = f"""
@@ -109,18 +130,28 @@ User feedback: {modifications}
 Generate an updated workflow that addresses the user's feedback.
 """
         
-        new_workflow_dict = await generator.generate_workflow(
+        new_workflow_dict = await self.generator.generate_workflow(
             task_description=modification_prompt,
             user_id=user_id,
             file_ids=file_ids
         )
+        
+        # Normalize edges
+        normalized_edges = []
+        for edge in new_workflow_dict.get("edges", []):
+            normalized_edge = {
+                "from_agent": edge.get("from_agent") or edge.get("from"),
+                "to_agent": edge.get("to_agent") or edge.get("to"),
+                "data_key": edge.get("data_key", "output")
+            }
+            normalized_edges.append(normalized_edge)
         
         # Update existing workflow
         await db.get_collection("workflows").update_one(
             {"id": workflow_id},
             {"$set": {
                 "agents": new_workflow_dict["agents"],
-                "edges": new_workflow_dict["edges"],
+                "edges": normalized_edges,
                 "description": new_workflow_dict["description"],
                 "status": "draft"
             }}
@@ -133,4 +164,10 @@ Generate an updated workflow that addresses the user's feedback.
         db = await get_mongodb()
         cursor = db.get_collection("workflows").find({"user_id": user_id})
         workflows = await cursor.to_list(length=100)
+        
+        # Remove MongoDB _id from all workflows
+        for wf in workflows:
+            if '_id' in wf:
+                del wf['_id']
+        
         return workflows

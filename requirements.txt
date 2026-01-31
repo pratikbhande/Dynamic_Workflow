@@ -1,0 +1,35 @@
+# Core Framework
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-dotenv
+python-multipart
+
+# LLM & AI
+openai
+langchain
+langchain-openai
+langgraph
+langchain-community
+langchain-core
+
+# Vector Stores
+chromadb
+faiss-cpu
+sentence-transformers
+
+# Database
+motor
+pymongo
+
+# File Processing
+pandas
+openpyxl
+pypdf
+aiofiles
+
+# HTTP Client
+httpx
+
+numpy
