@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings
 from typing import Optional
 import os
 
+
 class Settings(BaseSettings):
     """Application settings"""
     
@@ -18,7 +19,7 @@ class Settings(BaseSettings):
     MONGODB_DB: str = "workflow_orchestrator"
     
     # Vector DB
-    DEFAULT_VECTOR_DB: str = "chromadb"  # chromadb | faiss
+    DEFAULT_VECTOR_DB: str = "chromadb"
     CHROMADB_PATH: str = "./data/chromadb"
     FAISS_PATH: str = "./data/faiss"
     
@@ -28,10 +29,18 @@ class Settings(BaseSettings):
     # MCP
     SLACK_BOT_TOKEN: Optional[str] = None
     GITHUB_TOKEN: Optional[str] = None
+    TAVILY_API_KEY: Optional[str] = None
+    
+    # Advanced Features
+    MAX_RETRY_ATTEMPTS: int = 3
+    WORKFLOW_SIMILARITY_THRESHOLD: float = 0.85
+    ENABLE_WORKFLOW_MEMORY: bool = True
+    ENABLE_ERROR_LEARNING: bool = True
     
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "allow"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -40,4 +49,6 @@ class Settings(BaseSettings):
         os.makedirs(self.FAISS_PATH, exist_ok=True)
         os.makedirs(self.UPLOAD_DIR, exist_ok=True)
 
+
+# Create global settings instance
 settings = Settings()

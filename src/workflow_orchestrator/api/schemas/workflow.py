@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional
 class GenerateWorkflowRequest(BaseModel):
     task_description: str
     user_id: str = "default_user"
-    file_ids: Optional[List[str]] = None  # Specific files to use
+    file_ids: Optional[List[str]] = None  # None = all user files, [] = no files, ["file_x"] = specific files
 
 class GenerateWorkflowResponse(BaseModel):
     workflow_id: str
@@ -21,6 +21,7 @@ class ModifyWorkflowRequest(BaseModel):
 
 class ApproveWorkflowRequest(BaseModel):
     workflow_id: str
+    modification_prompt: Optional[str] = None
 
 class WorkflowListResponse(BaseModel):
     workflows: List[Dict[str, Any]]

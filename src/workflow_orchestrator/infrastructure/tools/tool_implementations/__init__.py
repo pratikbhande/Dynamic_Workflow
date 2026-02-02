@@ -1,3 +1,6 @@
 from .vector_db_tools import create_vector_db_tools
 from .code_executor_tools import create_code_executor_tool
 from .file_tools import create_file_tools
+from .service_deployment_tools import create_service_deployment_tools
+from .report_generator_tools import create_report_generator_tools
+from .chat_endpoint_tools import create_chat_endpoint_tools

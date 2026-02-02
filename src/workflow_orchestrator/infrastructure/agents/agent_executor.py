@@ -10,14 +10,148 @@ from ..tools.tool_implementations.vector_db_tools import create_vector_db_tools
 from ..tools.tool_implementations.code_executor_tools import create_code_executor_tool
 from ..tools.tool_implementations.file_tools import create_file_tools
 from ..tools.tool_implementations.mcp_tools import create_mcp_tools
+from ..tools.tool_implementations.service_deployment_tools import create_service_deployment_tools
+from ...domain.services.error_memory import ErrorMemory
 from ...config import settings
 
 
 class DynamicAgentExecutor:
-    """Executes individual agents with dynamically provisioned tools and full context"""
+    """Executes individual agents with self-healing and error learning"""
     
     def __init__(self):
         self.tool_registry = ToolRegistry()
+        self.error_memory = ErrorMemory()
+    
+    async def execute_agent_with_retry(
+        self,
+        agent_config: Dict[str, Any],
+        input_data: Any,
+        max_retries: int = None
+    ) -> Dict[str, Any]:
+        """Execute agent with automatic retry and self-healing"""
+        
+        max_retries = max_retries or settings.MAX_RETRY_ATTEMPTS
+        last_error = None
+        
+        for attempt in range(max_retries):
+            if attempt > 0:
+                print(f"\n🔄 Retry attempt {attempt + 1}/{max_retries}")
+            
+            try:
+                result = await self.execute_agent(agent_config, input_data)
+                
+                # If successful, store the solution if we had previous errors
+                if attempt > 0 and last_error:
+                    await self.error_memory.store_solution(
+                        error_message=last_error,
+                        solution=agent_config.get('detailed_prompt', ''),
+                        success=True
+                    )
+                
+                return result
+            
+            except Exception as e:
+                last_error = str(e)
+                print(f"❌ Agent failed: {last_error}")
+                
+                if attempt < max_retries - 1:
+                    # Try to find solution and enhance prompt
+                    enhanced_config = await self._enhance_prompt_with_solution(
+                        agent_config, last_error
+                    )
+                    if enhanced_config:
+                        agent_config = enhanced_config
+                        print(f"🔧 Applied solution from memory, retrying...")
+                    else:
+                        print(f"⚠️ No known solution, retrying with web search...")
+                        # Enhance with web search if available
+                        agent_config = await self._enhance_prompt_with_websearch(
+                            agent_config, last_error
+                        )
+                else:
+                    # Final attempt failed
+                    return {
+                        "agent_id": agent_config["id"],
+                        "output": f"Error after {max_retries} attempts: {last_error}",
+                        "status": "failed",
+                        "error": last_error,
+                        "attempts": max_retries
+                    }
+        
+        return {
+            "agent_id": agent_config["id"],
+            "output": f"Max retries exceeded: {last_error}",
+            "status": "failed",
+            "error": last_error
+        }
+    
+    async def _enhance_prompt_with_solution(
+        self,
+        agent_config: Dict[str, Any],
+        error_message: str
+    ) -> Dict[str, Any]:
+        """Enhance agent prompt with known solution"""
+        
+        if not settings.ENABLE_ERROR_LEARNING:
+            return None
+        
+        # Find solution from memory
+        solution = await self.error_memory.find_solution(error_message)
+        
+        if not solution:
+            return None
+        
+        # Generate error context
+        error_context = self.error_memory.generate_error_context(error_message, solution)
+        
+        # Enhance prompt
+        enhanced_config = agent_config.copy()
+        enhanced_config['detailed_prompt'] = f"""{agent_config['detailed_prompt']}
+
+{error_context}
+
+⚠️ PREVIOUS ERROR ENCOUNTERED:
+{error_message[:300]}
+
+Please apply the suggested solution above to prevent this error.
+"""
+        
+        return enhanced_config
+    
+    async def _enhance_prompt_with_websearch(
+        self,
+        agent_config: Dict[str, Any],
+        error_message: str
+    ) -> Dict[str, Any]:
+        """Enhance agent prompt with web search results"""
+        
+        # Check if websearch MCP is available
+        websearch_client = self.tool_registry.mcp_clients.get('websearch')
+        if not websearch_client or not websearch_client.connected:
+            return agent_config
+        
+        try:
+            # Search for solution
+            search_results = await websearch_client.search_solution(error_message)
+            
+            # Enhance prompt
+            enhanced_config = agent_config.copy()
+            enhanced_config['detailed_prompt'] = f"""{agent_config['detailed_prompt']}
+
+🔍 WEB SEARCH RESULTS FOR SIMILAR ERROR:
+{search_results}
+
+⚠️ PREVIOUS ERROR:
+{error_message[:300]}
+
+Use the web search results above to fix this error.
+"""
+            
+            return enhanced_config
+        
+        except Exception as e:
+            print(f"⚠️ Web search failed: {e}")
+            return agent_config
     
     async def execute_agent(
         self,
@@ -88,12 +222,7 @@ class DynamicAgentExecutor:
             import traceback
             traceback.print_exc()
             
-            return {
-                "agent_id": agent_config["id"],
-                "output": f"Error: {str(e)}",
-                "status": "failed",
-                "error": str(e)
-            }
+            raise  # Re-raise for retry logic
     
     async def _execute_with_tools(
         self,
@@ -104,7 +233,7 @@ class DynamicAgentExecutor:
     ) -> str:
         """Execute agent with tools using tool calling"""
         
-        print(f"\n   🔄 Executing agent with {len(tools)} tools...\n")
+        print(f"\n   📋 Executing agent with {len(tools)} tools...\n")
         
         # Create simple prompt for tool calling agent
         prompt = ChatPromptTemplate.from_messages([
@@ -177,7 +306,7 @@ Provide your complete response:
     ) -> str:
         """Execute with simple LLM call (no tools)"""
         
-        print(f"\n   🔄 Executing with LLM (no tools)...\n")
+        print(f"\n   📋 Executing with LLM (no tools)...\n")
         
         messages = [
             ("system", agent_config["detailed_prompt"]),
@@ -259,33 +388,61 @@ Provide your complete response:
         return provisioned
     
     async def _create_langchain_tools(
-        self,
-        provisioned_tools: List[Dict[str, Any]]
-    ) -> List[Tool]:
+            self,
+            provisioned_tools: List[Dict[str, Any]]
+        ) -> List[Tool]:
         """Convert provisioned tools to LangChain tools"""
         tools = []
         
+        # Add provisioned tools
         for prov_tool in provisioned_tools:
             try:
                 if prov_tool["type"] == "vector_db":
                     vector_tools = await create_vector_db_tools(prov_tool)
                     tools.extend(vector_tools)
+                    print(f"     ✅ Added vector DB tools: {[t.name for t in vector_tools]}")
                 
                 elif prov_tool["type"] == "code_execution":
                     code_tool = create_code_executor_tool()
                     tools.append(code_tool)
+                    print(f"     ✅ Added code execution tool")
                 
                 elif prov_tool["type"] == "mcp" and prov_tool.get("available"):
                     mcp_tools = await create_mcp_tools(prov_tool["client"])
                     tools.extend(mcp_tools)
+                    print(f"     ✅ Added MCP tools: {[t.name for t in mcp_tools]}")
                 
                 elif prov_tool.get("spec", {}).get("name") == "filesystem":
                     file_tools = await create_file_tools()
                     tools.extend(file_tools)
+                    print(f"     ✅ Added file tools")
             
             except Exception as e:
                 print(f"     ⚠️  Error creating tools for {prov_tool.get('type')}: {e}")
         
+        # ALWAYS add service deployment tools
+        try:
+            from ..tools.tool_implementations.service_deployment_tools import create_service_deployment_tools
+            service_tools = create_service_deployment_tools()
+            tools.extend(service_tools)
+            print(f"     ✅ Added service deployment tools: {[t.name for t in service_tools]}")
+        except Exception as e:
+            print(f"     ⚠️  Error adding service deployment tools: {e}")
+        
+        # ALWAYS add chat endpoint tools - WITH FIXED ERROR HANDLING
+        try:
+            from ..tools.tool_implementations.chat_endpoint_tools import create_chat_endpoint_tools
+            chat_tools = create_chat_endpoint_tools()
+            if chat_tools and isinstance(chat_tools, list):  # Verify it's a list
+                tools.extend(chat_tools)
+                print(f"     ✅ Added chat endpoint tools: {[t.name for t in chat_tools]}")
+            else:
+                print(f"     ⚠️  Chat endpoint tools returned invalid type: {type(chat_tools)}")
+        except Exception as e:
+            import traceback
+            print(f"     ⚠️  Error adding chat endpoint tools: {e}")
+            print(f"     Traceback: {traceback.format_exc()}")
+
         return tools
     
     def _prepare_comprehensive_input(
