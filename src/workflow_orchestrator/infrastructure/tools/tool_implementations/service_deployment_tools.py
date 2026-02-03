@@ -1,282 +1,241 @@
 from langchain_core.tools import Tool
 from typing import Dict, Any
 import uuid
-import asyncio
-import concurrent.futures
+import ast
+import subprocess
+import sys
 from ...services.service_manager import get_service_manager
+
+def _clean_code_input(code: str) -> str:
+    """Remove markdown code fences"""
+    code = code.strip()
+    
+    # Remove opening fence
+    opening_patterns = [
+        "```python\n", "```python", "```py\n", "```py", "```\n", "```"
+    ]
+    for pattern in opening_patterns:
+        if code.startswith(pattern):
+            code = code[len(pattern):].strip()
+            break
+    
+    # Remove closing fence
+    if code.endswith("```"):
+        code = code[:-3].strip()
+    
+    return code.strip()
 
 
 def create_service_deployment_tools() -> list:
-    """Create tools for deploying long-running services"""
+    """Create tools with dependency pre-installation"""
     
     service_manager = get_service_manager()
     
     def deploy_streamlit_func(code: str) -> str:
-        """
-        Deploy a Streamlit application and return URL
-        
-        Input: Complete Streamlit Python code
-        Output: URL where app is accessible
-        """
+        """Deploy Streamlit with dependency pre-installation"""
         try:
+            code = _clean_code_input(code)
+            print(f"\n🔍 Analyzing Streamlit app dependencies...")
+            
+            # STEP 1: Extract imports from code
+            imports = extract_imports(code)
+            
+            if imports:
+                print(f"   Found imports: {', '.join(imports)}")
+                
+                # STEP 2: Install missing packages
+                print(f"\n📥 Pre-installing dependencies...")
+                for module in imports:
+                    ensure_installed(module)
+            
+            # STEP 3: Deploy service
+            print(f"\n🚀 Deploying Streamlit app...")
+            
+            import asyncio
             service_id = f"st_{uuid.uuid4().hex[:8]}"
             
-            # FIX: Handle event loop properly for both sync and async contexts
             try:
-                # Check if we're in an async context
                 loop = asyncio.get_running_loop()
-                
-                # We're in async context, but tool is sync - use ThreadPoolExecutor
+                import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(
                         asyncio.run,
                         service_manager.deploy_streamlit(code, service_id)
                     )
                     service_info = future.result(timeout=90)
-                    
             except RuntimeError:
-                # No running loop - we can safely use asyncio.run()
                 service_info = asyncio.run(
                     service_manager.deploy_streamlit(code, service_id)
                 )
             
-            return f"""✅ Streamlit app deployed successfully!
+            return f"""✅ Streamlit deployed!
 
 URL: {service_info['url']}
 Service ID: {service_info['service_id']}
-Status: {service_info['status']}
 
-The app is now running and accessible at the URL above.
-Use this URL to interact with your Streamlit application.
-
-To stop the service later, use the service ID: {service_info['service_id']}
+Open in browser: {service_info['url']}
 """
         
-        except concurrent.futures.TimeoutError:
-            return f"❌ Error: Streamlit deployment timed out after 90 seconds"
-        
         except Exception as e:
-            import traceback
-            return f"❌ Error deploying Streamlit app: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            return f"❌ Deployment error: {str(e)}"
     
     def deploy_gradio_func(code: str) -> str:
-        """
-        Deploy a Gradio application and return URL
-        
-        Input: Complete Gradio Python code
-        Output: URL where app is accessible
-        """
+        """Deploy Gradio with dependency pre-installation"""
         try:
+            code = _clean_code_input(code)
+            print(f"\n🔍 Analyzing Gradio app dependencies...")
+            
+            imports = extract_imports(code)
+            
+            if imports:
+                print(f"   Found imports: {', '.join(imports)}")
+                print(f"\n📥 Pre-installing dependencies...")
+                for module in imports:
+                    ensure_installed(module)
+            
+            print(f"\n🚀 Deploying Gradio app...")
+            
+            import asyncio
             service_id = f"gr_{uuid.uuid4().hex[:8]}"
             
-            # FIX: Handle event loop properly
             try:
                 loop = asyncio.get_running_loop()
-                
+                import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(
                         asyncio.run,
                         service_manager.deploy_gradio(code, service_id)
                     )
                     service_info = future.result(timeout=90)
-                    
             except RuntimeError:
                 service_info = asyncio.run(
                     service_manager.deploy_gradio(code, service_id)
                 )
             
-            return f"""✅ Gradio app deployed successfully!
+            return f"""✅ Gradio deployed!
 
 URL: {service_info['url']}
 Service ID: {service_info['service_id']}
-Status: {service_info['status']}
 
-The app is now running and accessible at the URL above.
-Use this URL to interact with your Gradio interface.
-
-To stop the service later, use the service ID: {service_info['service_id']}
+Open in browser: {service_info['url']}
 """
         
-        except concurrent.futures.TimeoutError:
-            return f"❌ Error: Gradio deployment timed out after 90 seconds"
-        
         except Exception as e:
-            import traceback
-            return f"❌ Error deploying Gradio app: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-    
-    def deploy_flask_func(code: str) -> str:
-        """
-        Deploy a Flask application and return URL
-        
-        Input: Complete Flask Python code
-        Output: URL where app is accessible
-        """
-        try:
-            service_id = f"flask_{uuid.uuid4().hex[:8]}"
-            
-            # FIX: Handle event loop properly
-            try:
-                loop = asyncio.get_running_loop()
-                
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run,
-                        service_manager.deploy_flask(code, service_id)
-                    )
-                    service_info = future.result(timeout=90)
-                    
-            except RuntimeError:
-                service_info = asyncio.run(
-                    service_manager.deploy_flask(code, service_id)
-                )
-            
-            return f"""✅ Flask app deployed successfully!
-
-URL: {service_info['url']}
-Service ID: {service_info['service_id']}
-Status: {service_info['status']}
-
-The app is now running and accessible at the URL above.
-
-To stop the service later, use the service ID: {service_info['service_id']}
-"""
-        
-        except concurrent.futures.TimeoutError:
-            return f"❌ Error: Flask deployment timed out after 90 seconds"
-        
-        except Exception as e:
-            import traceback
-            return f"❌ Error deploying Flask app: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            return f"❌ Deployment error: {str(e)}"
     
     def list_services_func(input_str: str = "") -> str:
-        """List all running services"""
-        try:
-            services = service_manager.list_services()
-            
-            if not services:
-                return "No services currently running"
-            
-            result = ["🚀 ACTIVE SERVICES\n"]
-            result.append(f"Total: {len(services)} service(s) running\n")
-            
-            for service_id, info in services.items():
-                result.append(f"{'='*60}")
-                result.append(f"Service ID: {service_id}")
-                result.append(f"Type: {info['type']}")
-                result.append(f"URL: {info['url']}")
-                result.append(f"Port: {info['port']}")
-                result.append(f"Status: {info['status']}")
-                result.append(f"Process ID: {info['pid']}")
-                result.append(f"App File: {info['app_file']}")
-                result.append("")
-            
-            result.append(f"{'='*60}")
-            result.append("\nTo stop a service, use: DELETE /services/<service_id>")
-            
-            return "\n".join(result)
+        """List services"""
+        services = service_manager.list_services()
         
-        except Exception as e:
-            return f"❌ Error listing services: {str(e)}"
-    
-    def stop_service_func(service_id: str) -> str:
-        """Stop a running service"""
-        try:
-            success = service_manager.stop_service(service_id)
-            
-            if success:
-                return f"✅ Successfully stopped service: {service_id}"
-            else:
-                return f"⚠️  Service {service_id} not found or already stopped"
+        if not services:
+            return "No services running"
         
-        except Exception as e:
-            return f"❌ Error stopping service: {str(e)}"
+        result = ["🚀 ACTIVE SERVICES\n"]
+        for sid, info in services.items():
+            result.append(f"Service: {sid}")
+            result.append(f"  Type: {info['type']}")
+            result.append(f"  URL: {info['url']}")
+            result.append("")
+        
+        return "\n".join(result)
     
     return [
         Tool(
             name="deploy_streamlit",
-            description="""Deploy a Streamlit application as a live service.
-            
-Input: Complete Python code for Streamlit app
-
-Example input:
-import streamlit as st
-st.title("My App")
-st.write("Hello World")
-
-Output: URL where the app is accessible
-
-The app will run as a background service on an available port (8501-8600).
-""",
+            description="Deploy Streamlit app with auto dependency installation",
             func=deploy_streamlit_func
         ),
         Tool(
             name="deploy_gradio",
-            description="""Deploy a Gradio application as a live service.
-            
-Input: Complete Python code for Gradio app
-
-Example input:
-import gradio as gr
-
-def greet(name):
-    return f"Hello {{name}}!"
-
-demo = gr.Interface(fn=greet, inputs="text", outputs="text")
-demo.launch()
-
-Output: URL where the app is accessible
-
-The app will run as a background service on an available port (8501-8600).
-""",
+            description="Deploy Gradio app with auto dependency installation",
             func=deploy_gradio_func
         ),
         Tool(
-            name="deploy_flask",
-            description="""Deploy a Flask application as a live service.
-            
-Input: Complete Python code for Flask app
-
-Example input:
-from flask import Flask
-app = Flask(__name__)
-
-@app.route('/')
-def hello():
-    return 'Hello World!'
-
-Output: URL where the app is accessible
-
-The app will run as a background service on an available port (8501-8600).
-""",
-            func=deploy_flask_func
-        ),
-        Tool(
             name="list_services",
-            description="""List all currently running services with their URLs and status.
-
-Input: Empty string or any text (input is ignored)
-
-Output: Formatted list of all active services including:
-- Service IDs
-- URLs
-- Types (streamlit/gradio/flask)
-- Status
-
-Use this to check what services are currently running.
-""",
+            description="List running services",
             func=list_services_func
-        ),
-        Tool(
-            name="stop_service",
-            description="""Stop a running service by its service ID.
-
-Input: Service ID (e.g., 'st_abc12345')
-
-Output: Success or error message
-
-Use this to stop a service that is no longer needed.
-Get service IDs from list_services tool.
-""",
-            func=stop_service_func
         )
     ]
+
+
+def extract_imports(code: str) -> list:
+    """Extract imports from code"""
+    imports = set()
+    
+    try:
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.add(alias.name.split('.')[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    imports.add(node.module.split('.')[0])
+    except:
+        import re
+        for line in code.split('\n'):
+            for pattern in [r'^\s*import\s+(\w+)', r'^\s*from\s+(\w+)\s+import']:
+                match = re.match(pattern, line)
+                if match:
+                    imports.add(match.group(1))
+    
+    builtins = {
+        'sys', 'os', 'io', 're', 'json', 'csv', 'math', 'random',
+        'datetime', 'time', 'collections', 'itertools', 'functools',
+        'pathlib', 'typing', 'streamlit', 'gradio'
+    }
+    
+    return [imp for imp in imports if imp not in builtins]
+
+
+def ensure_installed(module_name: str):
+    """Ensure package is installed using AI"""
+    
+    # Check if installed
+    try:
+        __import__(module_name)
+        print(f"   ✓ {module_name}")
+        return
+    except:
+        print(f"   ✗ {module_name} - installing via AI...")
+    
+    # Ask AI for package name
+    package = ask_ai_simple(module_name)
+    
+    if package:
+        print(f"      💡 AI: {package}")
+        
+        try:
+            subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', package,
+                 '--break-system-packages', '--quiet'],
+                timeout=180,
+                check=True
+            )
+            print(f"      ✅ Installed")
+        except:
+            print(f"      ⚠️  Install failed")
+
+
+def ask_ai_simple(module_name: str) -> str:
+    """Quick AI query for package name"""
+    try:
+        from openai import OpenAI
+        from ....config import settings
+        
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return only the pip package name, one word."},
+                {"role": "user", "content": f"Module: {module_name}"}
+            ],
+            max_tokens=10,
+            temperature=0
+        )
+        
+        return response.choices[0].message.content.strip().split()[0]
+    
+    except:
+        return module_name  # Fallback to module name

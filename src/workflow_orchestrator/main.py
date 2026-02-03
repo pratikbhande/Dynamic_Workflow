@@ -10,6 +10,7 @@ from .api.routes.executions import router as executions_router
 from .api.routes.files import router as files_router
 from .api.routes.services import router as services_router
 from .api.routes.chat import router as chat_router
+from .api.routes.credentials import router as credentials_router  # NEW
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -27,7 +28,17 @@ async def lifespan(app: FastAPI):
     print(f"✅ Upload directory: {settings.UPLOAD_DIR}")
     print(f"✅ Self-healing: {settings.ENABLE_ERROR_LEARNING}")
     print(f"✅ Workflow memory: {settings.ENABLE_WORKFLOW_MEMORY}")
-    print(f"✅ Web search: {'Enabled' if settings.TAVILY_API_KEY else 'Disabled (add TAVILY_API_KEY)'}")
+    
+    # Load prompt library
+    from .domain.prompts.prompt_library import get_prompt_library
+    prompt_lib = get_prompt_library()
+    print(f"✅ Prompt library: {len(prompt_lib.list_prompts())} prompts loaded")
+    
+    # Load predefined tools
+    from .infrastructure.tools.tool_registry import ToolRegistry
+    registry = ToolRegistry()
+    print(f"✅ Predefined tools: {len(registry.list_predefined_tools())} tools loaded")
+    
     print(f"\n{'='*60}")
     print(f"📡 Server ready at http://0.0.0.0:8000")
     print(f"📚 API docs at http://0.0.0.0:8000/docs")
@@ -38,9 +49,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     print(f"\n{'='*60}")
     print(f"👋 Shutting down {settings.APP_NAME}")
-    print(f"Cleaning up services...")
     
-    # Cleanup all services
     from .infrastructure.services.service_manager import get_service_manager
     service_manager = get_service_manager()
     service_manager.cleanup_all()
@@ -50,8 +59,8 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title=settings.APP_NAME,
-    description="🤖 Intelligent Multi-Agent Workflow System with Self-Healing & Service Deployment",
-    version="0.2.0",
+    description="🤖 Intelligent Multi-Agent Workflow System with Predefined Tools & Credential Management",
+    version="0.3.0",
     lifespan=lifespan
 )
 
@@ -70,6 +79,7 @@ app.include_router(executions_router)
 app.include_router(files_router)
 app.include_router(services_router)
 app.include_router(chat_router)
+app.include_router(credentials_router)  # NEW
 
 @app.get("/")
 async def root():
@@ -77,32 +87,41 @@ async def root():
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
-        "version": "0.2.0",
+        "version": "0.3.0",
         "features": {
-            "workflow_generation": "AI-powered with memory",
-            "self_healing": "Automatic error recovery",
+            "predefined_tools": ["rag_builder", "rag_chat", "report_generator", "web_search"],
+            "workflow_generation": "AI-powered with prompt library",
+            "credential_management": "Encrypted storage",
+            "self_healing": "5-retry strategy with web search",
             "service_deployment": "Streamlit & Gradio apps",
-            "report_generation": "PDF with charts",
-            "web_search": "Solution finding"
+            "vector_dbs": ["chromadb", "faiss", "pinecone"]
         },
         "endpoints": {
             "docs": "/docs",
             "files": "/files",
             "workflows": "/workflows",
             "executions": "/executions",
-            "services": "/services"
+            "services": "/services",
+            "credentials": "/credentials"
         }
     }
 
 @app.get("/health")
 async def health():
     """Detailed health check"""
+    from .infrastructure.tools.tool_registry import ToolRegistry
+    from .domain.prompts.prompt_library import get_prompt_library
+    
+    registry = ToolRegistry()
+    prompt_lib = get_prompt_library()
+    
     return {
         "status": "healthy",
         "database": "connected",
         "vector_db": settings.DEFAULT_VECTOR_DB,
         "upload_directory": settings.UPLOAD_DIR,
-        "openai_configured": bool(settings.OPENAI_API_KEY),
+        "predefined_tools": registry.list_predefined_tools(),
+        "prompts_loaded": len(prompt_lib.list_prompts()),
         "features": {
             "self_healing": settings.ENABLE_ERROR_LEARNING,
             "workflow_memory": settings.ENABLE_WORKFLOW_MEMORY,

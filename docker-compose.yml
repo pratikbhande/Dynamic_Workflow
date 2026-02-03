@@ -27,7 +27,9 @@ services:
     container_name: workflow_app
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8000:8000"           # Main FastAPI application
+      - "8100-8200:8100-8200" # Chat endpoints (run_chat_endpoint tool)
+      - "8501-8600:8501-8600" # Service deployments (Streamlit, Gradio, Flask)
     environment:
       APP_NAME: workflow-orchestrator
       DEBUG: "True"
@@ -41,6 +43,7 @@ services:
       UPLOAD_DIR: /app/data/uploads
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
     volumes:
       - app_data:/app/data
       - ./src:/app/src

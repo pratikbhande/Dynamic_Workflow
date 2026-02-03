@@ -31,8 +31,11 @@ class Settings(BaseSettings):
     GITHUB_TOKEN: Optional[str] = None
     TAVILY_API_KEY: Optional[str] = None
     
+    # Credential Encryption (IMPORTANT!)
+    CREDENTIAL_ENCRYPTION_KEY: Optional[str] = None
+    
     # Advanced Features
-    MAX_RETRY_ATTEMPTS: int = 3
+    MAX_RETRY_ATTEMPTS: int = 5
     WORKFLOW_SIMILARITY_THRESHOLD: float = 0.85
     ENABLE_WORKFLOW_MEMORY: bool = True
     ENABLE_ERROR_LEARNING: bool = True

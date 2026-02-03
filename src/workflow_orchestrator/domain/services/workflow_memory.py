@@ -37,48 +37,50 @@ class WorkflowMemory:
         user_id: str
     ) -> Optional[Dict[str, Any]]:
         """
-        Find similar workflow from memory
+        Find similar workflows as INSPIRATION/REFERENCE
         
-        Returns:
-            Workflow dict if found, None otherwise
+        Lower threshold: 0.70 (was 0.85)
+        Returns workflows for context, not exact reuse
         """
         await self.initialize()
         
         try:
-            # Generate embedding for task
             task_embedding = await self.embeddings_client.get_embedding(task_description)
             
-            # Search in vector store
             results = await self.vector_store.search(
                 collection_name=self.collection_name,
                 query_embedding=task_embedding,
-                top_k=3
+                top_k=5  # Get multiple for context
             )
             
             if not results:
                 return None
             
-            # Check if top result is similar enough
+            # Changed: Return as reference if similarity >= 0.70
             top_result = results[0]
-            similarity = 1 - top_result['distance']  # Convert distance to similarity
+            similarity = 1 - top_result['distance']
             
-            print(f"🔍 Workflow similarity: {similarity:.2%}")
+            print(f"📊 Workflow similarity: {similarity:.2%}")
             
-            if similarity >= self.similarity_threshold:
-                # Get full workflow from MongoDB
+            # Lower threshold: use as reference, not exact match
+            if similarity >= 0.70:  # Was 0.85
                 workflow_id = top_result['metadata'].get('workflow_id')
                 if workflow_id:
                     db = await get_mongodb()
                     workflow = await db.get_collection("workflows").find_one({"id": workflow_id})
                     
-                    if workflow and workflow.get('user_id') == user_id:
-                        print(f"✅ Reusing workflow: {workflow['name']} (similarity: {similarity:.2%})")
-                        return workflow
+                    if workflow:
+                        if similarity >= 0.90:
+                            print(f"♻️  Very similar - can reuse structure")
+                        else:
+                            print(f"📚 Similar - using as reference/inspiration")
+                        
+                        return None  # Don't reuse, just use as knowledge
             
             return None
         
         except Exception as e:
-            print(f"⚠️ Error searching workflow memory: {e}")
+            print(f"⚠️  Error searching workflow memory: {e}")
             return None
     
     async def store_workflow(

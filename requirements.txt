@@ -50,5 +50,4 @@ psutil
 httpx
 requests
 
-# Web Search (get free API key at tavily.com)
-# Add to .env: TAVILY_API_KEY=your_key_here
+cryptography
