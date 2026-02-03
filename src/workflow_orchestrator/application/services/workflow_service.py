@@ -1,8 +1,10 @@
 from typing import Dict, Any, List
 from ...domain.services.workflow_generator import WorkflowGenerator
 from ...domain.models import WorkflowGraph, AgentNode, Edge, ToolRequirement
+from ...domain.services.workflow_memory import WorkflowMemory
 from ...infrastructure.database.mongodb import get_mongodb
 from datetime import datetime
+from ...config import settings
 import uuid
 
 class WorkflowService:
@@ -10,6 +12,7 @@ class WorkflowService:
     
     def __init__(self):
         self.generator = WorkflowGenerator()
+        self.workflow_memory = WorkflowMemory()
     
     async def generate_workflow(
         self,
@@ -17,13 +20,42 @@ class WorkflowService:
         task_description: str,
         file_ids: List[str] = None
     ) -> WorkflowGraph:
-        """Generate workflow from task description with file context"""
+        """Generate workflow from task description with intelligent reuse"""
         
-        print(f"\n🔄 Generating workflow for task: {task_description}")
+        print(f"\n📋 Generating workflow for task: {task_description}")
         if file_ids:
             print(f"   Using files: {file_ids}")
         
-        # Generate using OpenAI with full context
+        # CHECK MEMORY FIRST
+        if settings.ENABLE_WORKFLOW_MEMORY:
+            print(f"\n🔍 Checking workflow memory for similar tasks...")
+            similar_workflow = await self.workflow_memory.find_similar_workflow(
+                task_description=task_description,
+                user_id=user_id
+            )
+            
+            if similar_workflow:
+                # Remove MongoDB _id
+                if '_id' in similar_workflow:
+                    del similar_workflow['_id']
+                
+                # Create new workflow ID but reuse structure
+                # import uuid
+                new_workflow = similar_workflow.copy()
+                new_workflow['id'] = f"wf_{uuid.uuid4().hex[:12]}"
+                new_workflow['status'] = 'draft'
+                new_workflow['created_at'] = datetime.utcnow()
+                
+                # Save reused workflow
+                db = await get_mongodb()
+                await db.get_collection("workflows").insert_one(new_workflow)
+                
+                print(f"♻️  Reused workflow: {similar_workflow['name']}")
+                
+                return WorkflowGraph(**new_workflow)
+        
+        # Generate new workflow if no match found
+        print(f"\n🆕 Generating new workflow...")
         workflow_dict = await self.generator.generate_workflow(
             task_description=task_description,
             user_id=user_id,
@@ -33,7 +65,6 @@ class WorkflowService:
         # Normalize edges format
         normalized_edges = []
         for edge in workflow_dict.get("edges", []):
-            # Handle both formats
             normalized_edge = {
                 "from_agent": edge.get("from_agent") or edge.get("from"),
                 "to_agent": edge.get("to_agent") or edge.get("to"),
@@ -51,8 +82,35 @@ class WorkflowService:
             edges=[Edge(**edge) for edge in normalized_edges],
             status="draft"
         )
+
+        # VALIDATION: Ensure required_tools are present
+        print(f"\n🔍 Validating workflow tools...")
+        for agent in workflow.agents:
+            if not agent.required_tools:
+                print(f"   ⚠️  {agent.name} has NO required_tools! Fixing...")
+                
+                # Auto-fix based on agent type
+                if agent.type == 'rag_builder':
+                    agent.required_tools = [
+                        ToolRequirement(name="chromadb", type="vector_db", purpose="index documents"),
+                        ToolRequirement(name="python_executor", type="code_execution", purpose="process files")
+                    ]
+                elif agent.type == 'chat_endpoint_builder':
+                    agent.required_tools = [
+                        ToolRequirement(name="python_executor", type="code_execution", purpose="create endpoint")
+                    ]
+                else:
+                    agent.required_tools = [
+                        ToolRequirement(name="python_executor", type="code_execution", purpose="execute task")
+                    ]
+                
+                print(f"   ✅ Added {len(agent.required_tools)} tools to {agent.name}")
+            else:
+                print(f"   ✅ {agent.name} has {len(agent.required_tools)} tools")
+
+        print(f"✅ Validation complete\n")
         
-        # Save to database (convert to dict for MongoDB)
+        # Save to database
         db = await get_mongodb()
         workflow_data = workflow.model_dump()
         
@@ -67,6 +125,13 @@ class WorkflowService:
         ]
         
         await db.get_collection("workflows").insert_one(workflow_data)
+        
+        # STORE IN MEMORY for future reuse
+        if settings.ENABLE_WORKFLOW_MEMORY:
+            await self.workflow_memory.store_workflow(
+                workflow=workflow_data,
+                task_description=task_description
+            )
         
         print(f"✅ Workflow generated: {workflow.id}")
         print(f"   Agents: {len(workflow.agents)}")

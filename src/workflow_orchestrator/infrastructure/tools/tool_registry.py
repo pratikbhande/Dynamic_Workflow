@@ -1,30 +1,66 @@
-from typing import Dict, List, Any
+"""Tool Registry - Manages both predefined and dynamic tools"""
+from typing import Dict, List, Any, Optional
+import re
 from ..vector_stores.factory import VectorStoreFactory, VectorDBType
 from ..mcp.filesystem_mcp import FilesystemMCP
 from ..mcp.mongodb_mcp import MongoDBMCP
 from ..mcp.slack_mcp import SlackMCP
-from ...domain.models import ToolRequirement
+from ..mcp.websearch_mcp import WebSearchMCP
 import uuid
 
+
 class ToolRegistry:
-    """Registry for all available tools and provisioning"""
+    """
+    Registry for all available tools
+    
+    Architecture:
+    1. Predefined tools (imported from predefined/)
+    2. Dynamic tools (provisioned on demand)
+    3. MCP tools (external services)
+    """
     
     def __init__(self):
         self.vector_store_factory = VectorStoreFactory()
         self.mcp_clients = {
             "filesystem": FilesystemMCP(),
             "mongodb": MongoDBMCP(),
-            "slack": SlackMCP()
+            "slack": SlackMCP(),
+            "websearch": WebSearchMCP()
         }
+        self.predefined_tools = self._load_predefined_tools()
+    
+    def _load_predefined_tools(self) -> Dict[str, Any]:
+        """Load predefined tools"""
         
-        self.available_tools = {
-            "chromadb": {"type": "vector_db", "description": "Embedded vector database for semantic search"},
-            "faiss": {"type": "vector_db", "description": "Fast in-memory vector search"},
-            "filesystem": {"type": "mcp", "description": "File read/write operations"},
-            "mongodb": {"type": "mcp", "description": "Database CRUD operations"},
-            "slack": {"type": "mcp", "description": "Send Slack notifications"},
-            "python_executor": {"type": "code_execution", "description": "Execute Python code"}
-        }
+        predefined = {}
+        
+        try:
+            from .predefined import (
+                RagBuilderTool,
+                RagChatTool,
+                ReportGeneratorTool,
+                WebSearchTool
+            )
+            
+            predefined["rag_builder"] = RagBuilderTool()
+            predefined["rag_chat"] = RagChatTool()
+            predefined["report_generator"] = ReportGeneratorTool()
+            predefined["web_search"] = WebSearchTool()
+            
+            print(f"📦 Loaded {len(predefined)} predefined tools")
+            
+        except Exception as e:
+            print(f"⚠️  Error loading predefined tools: {e}")
+        
+        return predefined
+    
+    def get_predefined_tool(self, tool_name: str):
+        """Get predefined tool instance"""
+        return self.predefined_tools.get(tool_name.lower())
+    
+    def list_predefined_tools(self) -> List[str]:
+        """List available predefined tools"""
+        return list(self.predefined_tools.keys())
     
     async def provision_tool(
         self,
@@ -32,21 +68,61 @@ class ToolRegistry:
         agent_id: str,
         purpose: str
     ) -> Dict[str, Any]:
-        """Provision a tool for an agent"""
+        """
+        Provision tool - checks predefined first, then dynamic
         
-        if tool_name not in self.available_tools:
-            raise ValueError(f"Tool {tool_name} not available")
+        Strategy:
+        1. Check if predefined tool exists
+        2. If not, provision dynamically
+        3. Normalize tool names for matching
+        """
         
-        tool_info = self.available_tools[tool_name]
+        # Normalize name
+        normalized = tool_name.lower().replace(" ", "").replace("-", "").replace("_", "")
         
-        if tool_info["type"] == "vector_db":
-            return await self._provision_vector_db(tool_name, agent_id, purpose)
-        elif tool_info["type"] == "mcp":
-            return await self._provision_mcp(tool_name)
-        elif tool_info["type"] == "code_execution":
-            return {"type": "code_execution", "sandbox": True}
+        print(f"     🔧 Provisioning '{tool_name}'")
         
-        return {}
+        # Check predefined tools first
+        if tool_name.lower() in self.predefined_tools:
+            return {
+                "type": "predefined",
+                "tool_name": tool_name.lower()
+            }
+        
+        # Check code execution keywords
+        code_keywords = [
+            "python", "executor", "code", "execute",
+            "script", "processor", "parser"
+        ]
+        if any(keyword in normalized for keyword in code_keywords):
+            return {
+                "type": "code_execution",
+                "tool_name": "python_executor",
+                "sandbox": True
+            }
+        
+        # Check vector DB keywords
+        vector_keywords = ["vector", "chroma", "faiss", "rag", "index", "semantic"]
+        if any(keyword in normalized for keyword in vector_keywords):
+            return await self._provision_vector_db("chromadb", agent_id, purpose)
+        
+        # Check MCP keywords
+        if "filesystem" in normalized or "file" in normalized:
+            return await self._provision_mcp("filesystem")
+        if "mongo" in normalized:
+            return await self._provision_mcp("mongodb")
+        if "slack" in normalized:
+            return await self._provision_mcp("slack")
+        if "web" in normalized or "search" in normalized:
+            return await self._provision_mcp("websearch")
+        
+        # Default to code execution
+        print(f"     ⚠️  Unknown tool '{tool_name}' → defaulting to code_execution")
+        return {
+            "type": "code_execution",
+            "tool_name": "python_executor",
+            "sandbox": True
+        }
     
     async def _provision_vector_db(
         self,
@@ -54,47 +130,34 @@ class ToolRegistry:
         agent_id: str,
         purpose: str
     ) -> Dict[str, Any]:
-        """Create vector DB collection"""
+        """Provision vector database"""
         store = self.vector_store_factory.create(db_type)
         
-        collection_name = await store.create_collection(
-            name=f"{agent_id}_{purpose}",
-            dimension=1536
-        )
+        collection_name = "rag_documents"
+        
+        try:
+            await store.create_collection(name=collection_name, dimension=1536)
+        except:
+            pass  # Already exists
         
         return {
             "type": "vector_db",
             "db_type": db_type,
             "store": store,
             "collection_name": collection_name,
-            "cleanup_required": True
+            "cleanup_required": False
         }
     
     async def _provision_mcp(self, mcp_name: str) -> Dict[str, Any]:
         """Get MCP client"""
         client = self.mcp_clients.get(mcp_name)
-        if not client:
-            return {"type": "mcp", "available": False}
-        
         return {
             "type": "mcp",
             "mcp_name": mcp_name,
             "client": client,
-            "available": client.connected
+            "available": client.connected if client else False
         }
     
-    def get_tool_descriptions(self) -> str:
-        """Get formatted list of available tools"""
-        descriptions = []
-        for name, info in self.available_tools.items():
-            descriptions.append(f"- {name}: {info['description']}")
-        return "\n".join(descriptions)
-    
     async def cleanup_tools(self, provisioned_tools: List[Dict[str, Any]]) -> None:
-        """Cleanup provisioned resources"""
-        for tool in provisioned_tools:
-            if tool.get("cleanup_required") and tool["type"] == "vector_db":
-                store = tool["store"]
-                collection_name = tool["collection_name"]
-                await store.delete_collection(collection_name)
-                print(f"✅ Cleaned up {tool['db_type']} collection: {collection_name}")
+        """Cleanup provisioned tools"""
+        pass  # Implement if needed

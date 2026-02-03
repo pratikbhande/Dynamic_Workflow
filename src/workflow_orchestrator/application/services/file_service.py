@@ -25,7 +25,7 @@ class FileService:
     
     async def upload_file(
         self,
-        file: BinaryIO,  # This is a sync file object from FastAPI
+        file: BinaryIO,
         filename: str,
         user_id: str
     ) -> Dict[str, Any]:
@@ -57,7 +57,7 @@ class FileService:
         
         print(f"✅ File processed: {len(text_content)} characters extracted")
         
-        # Create file record with proper datetime handling
+        # Create file record
         file_record = {
             "id": file_id,
             "user_id": user_id,
@@ -99,7 +99,6 @@ class FileService:
         if not file_record:
             raise ValueError(f"File {file_id} not found")
         
-        # Convert MongoDB types to JSON serializable
         return self._serialize_file_record(file_record)
     
     async def list_user_files(self, user_id: str) -> list:
@@ -108,7 +107,6 @@ class FileService:
         cursor = db.get_collection("files").find({"user_id": user_id})
         files = await cursor.to_list(length=100)
         
-        # Convert all files to serializable format
         return [self._serialize_file_record(f) for f in files]
     
     async def get_data_inventory(self, user_id: str) -> str:
@@ -116,7 +114,7 @@ class FileService:
         files = await self.list_user_files(user_id)
         
         if not files:
-            return "No files uploaded yet."
+            return "No files uploaded yet. User can create workflows that build infrastructure (RAG apps, dashboards, etc.) from scratch."
         
         inventory_parts = []
         inventory_parts.append("DATA INVENTORY")
@@ -129,7 +127,6 @@ class FileService:
             inventory_parts.append(f"  Type: {file_info['type']}")
             inventory_parts.append(f"  Path: {file_info['file_path']}")
             
-            # Add detailed structure
             processed = file_info.get('processed_data', {})
             
             if file_info['type'] in ['.xlsx', '.xls']:
@@ -140,7 +137,6 @@ class FileService:
                         inventory_parts.append(f"      Columns: {', '.join(sheet_data.get('columns', []))}")
                         inventory_parts.append(f"      Total Rows: {sheet_data.get('summary', {}).get('total_rows', 0)}")
                         
-                        # Show sample data
                         sample_rows = sheet_data.get('rows', [])[:3]
                         if sample_rows:
                             inventory_parts.append(f"      Sample Data:")
@@ -154,7 +150,6 @@ class FileService:
                     inventory_parts.append(f"    Columns: {', '.join(data.get('columns', []))}")
                     inventory_parts.append(f"    Total Rows: {data.get('summary', {}).get('total_rows', 0)}")
                     
-                    # Show sample data
                     sample_rows = data.get('rows', [])[:3]
                     if sample_rows:
                         inventory_parts.append(f"    Sample Data:")
@@ -167,7 +162,6 @@ class FileService:
                     inventory_parts.append(f"  PDF File:")
                     inventory_parts.append(f"    Total Pages: {data.get('total_pages', 0)}")
                     
-                    # Show text preview
                     text_preview = file_info.get('text_content', '')[:300]
                     inventory_parts.append(f"    Content Preview:")
                     inventory_parts.append(f"      {text_preview}...")
@@ -181,18 +175,15 @@ class FileService:
     def _serialize_file_record(self, file_record: Dict[str, Any]) -> Dict[str, Any]:
         """Convert MongoDB file record to JSON serializable format"""
         
-        # Remove MongoDB internal fields
         if '_id' in file_record:
             del file_record['_id']
         
-        # Convert datetime objects to ISO strings
         for key in ['created_at', 'updated_at']:
             if key in file_record and file_record[key]:
                 if isinstance(file_record[key], datetime):
                     file_record[key] = file_record[key].isoformat()
         
-        # Return serializable format
-        result = {
+        return {
             "file_id": file_record.get("id"),
             "filename": file_record.get("original_filename"),
             "type": file_record.get("file_type"),
@@ -203,5 +194,3 @@ class FileService:
             "created_at": file_record.get("created_at"),
             "updated_at": file_record.get("updated_at")
         }
-        
-        return result

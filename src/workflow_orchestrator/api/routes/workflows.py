@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
+from datetime import datetime
+
 from ..schemas.workflow import (
     GenerateWorkflowRequest,
     GenerateWorkflowResponse,
@@ -20,18 +22,20 @@ async def generate_workflow(request: GenerateWorkflowRequest):
     """
     Generate a new workflow from task description with full file context
     
-    This endpoint:
-    1. Retrieves all uploaded files for the user (or specific files if file_ids provided)
-    2. Extracts complete metadata (columns, sample data, content)
-    3. Sends everything to GPT-4 to generate detailed agent prompts
-    4. Returns workflow with executable, context-aware agent instructions
+    Works in TWO modes:
+    1. FILE-BASED: Uses uploaded files and their actual structure
+    2. TEMPLATE: Creates self-contained apps when no files uploaded (file_ids=[])
     
-    Example:
+    Examples:
+    - With files: "Analyze this Excel and create a report"
+    - Without files: "Build a RAG app where I can upload PDFs and chat"
+    
+    Request body:
 ```json
     {
         "task_description": "Analyze sales data and generate report",
         "user_id": "user_123",
-        "file_ids": ["file_abc", "file_def"]  // Optional: specific files
+        "file_ids": ["file_abc", "file_def"]  // Optional: null=all files, []=no files
     }
 ```
     """
@@ -85,7 +89,7 @@ async def get_workflow(workflow_id: str):
     - Dependencies (edges)
     - Status
     
-    Use this to review the workflow before approval
+    Use this to review the workflow before approval (like n8n canvas view)
     """
     try:
         workflow = await workflow_service.get_workflow(workflow_id)
@@ -141,11 +145,31 @@ async def approve_workflow(request: ApproveWorkflowRequest):
     """
     Approve a workflow for execution
     
+    NEW: Can optionally modify workflow during approval
+    
+    Examples:
+    - Simple approval: {"workflow_id": "wf_123"}
+    - Approve with modifications: 
+      {
+        "workflow_id": "wf_123",
+        "modification_prompt": "Add error handling and logging to all agents"
+      }
+    
     Once approved, the workflow can be executed.
     Status changes from 'draft' to 'approved'
     """
     try:
-        workflow = await workflow_service.approve_workflow(request.workflow_id)
+        if request.modification_prompt:
+            # User wants to modify before approving
+            print(f"🔄 Modifying workflow {request.workflow_id} before approval")
+            workflow = await workflow_service.modify_workflow(
+                workflow_id=request.workflow_id,
+                modifications=request.modification_prompt,
+                user_id="default_user"  # TODO: Get from auth context
+            )
+        else:
+            # Simple approval - just change status
+            workflow = await workflow_service.approve_workflow(request.workflow_id)
         
         return {
             "status": "success",
@@ -213,7 +237,7 @@ async def modify_workflow(request: ModifyWorkflowRequest):
 @router.get("/user/{user_id}", response_model=WorkflowListResponse)
 async def list_workflows(
     user_id: str,
-    status: Optional[str] = Query(None, description="Filter by status: draft, approved, executing, completed, failed"),
+    status: Optional[str] = Query(None, description="Filter by status: draft, approved"),
     limit: int = Query(50, ge=1, le=100, description="Maximum number of workflows to return")
 ):
     """
@@ -464,7 +488,7 @@ async def import_workflow(
     """
     try:
         from ...infrastructure.database.mongodb import get_mongodb
-        from ...domain.models import WorkflowGraph
+        from ...domain.models import WorkflowGraph, AgentNode, Edge
         import uuid
         
         # Validate structure
@@ -483,8 +507,8 @@ async def import_workflow(
             user_id=user_id,
             name=wf_data["name"],
             description=wf_data["description"],
-            agents=wf_data["agents"],
-            edges=wf_data["edges"],
+            agents=[AgentNode(**agent) for agent in wf_data["agents"]],
+            edges=[Edge(**edge) for edge in wf_data["edges"]],
             status="draft"
         )
         
@@ -575,76 +599,3 @@ async def validate_workflow(workflow_id: str):
             status_code=500,
             detail=f"Error validating workflow: {str(e)}"
         )
-
-
-@router.get("/{workflow_id}/estimate-cost")
-async def estimate_workflow_cost(workflow_id: str):
-    """
-    Estimate execution cost for workflow
-    
-    Provides rough cost estimates based on:
-    - Number of agents
-    - Model complexity
-    - Expected token usage
-    - Tool usage (vector DBs, etc.)
-    
-    Note: Actual costs may vary based on execution
-    """
-    try:
-        workflow = await workflow_service.get_workflow(workflow_id)
-        
-        # Simple cost estimation
-        # This is a rough estimate - actual costs depend on execution
-        base_cost_per_agent = {
-            "data_processor": 0.05,  # Assuming Haiku/Sonnet
-            "rag_builder": 0.10,      # Vector DB operations + LLM
-            "analyzer": 0.08,
-            "report_generator": 0.06,
-            "code_executor": 0.03
-        }
-        
-        total_estimated_cost = 0
-        agent_costs = []
-        
-        for agent in workflow.agents:
-            agent_type = agent.type
-            base_cost = base_cost_per_agent.get(agent_type, 0.05)
-            
-            # Adjust based on tools
-            tool_multiplier = 1.0
-            for tool in agent.required_tools:
-                if tool.type == "vector_db":
-                    tool_multiplier *= 1.5  # Vector DB adds cost
-                elif tool.type == "code_execution":
-                    tool_multiplier *= 1.2
-            
-            agent_cost = base_cost * tool_multiplier
-            total_estimated_cost += agent_cost
-            
-            agent_costs.append({
-                "agent_id": agent.id,
-                "agent_name": agent.name,
-                "estimated_cost": round(agent_cost, 4)
-            })
-        
-        return {
-            "workflow_id": workflow_id,
-            "workflow_name": workflow.name,
-            "total_agents": len(workflow.agents),
-            "estimated_total_cost": round(total_estimated_cost, 4),
-            "currency": "USD",
-            "agent_breakdown": agent_costs,
-            "note": "This is a rough estimate. Actual costs depend on data size, complexity, and execution time."
-        }
-    
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error estimating cost: {str(e)}"
-        )
-
-
-# Add datetime import at top of file
-from datetime import datetime

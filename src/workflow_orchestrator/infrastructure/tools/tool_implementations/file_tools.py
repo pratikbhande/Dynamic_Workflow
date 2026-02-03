@@ -8,12 +8,23 @@ async def create_file_tools() -> List[Tool]:
     """Create tools for file operations"""
     
     async def read_file_func(filepath: str) -> str:
-        """Read file contents"""
+        """Read file contents - intelligently handles different file types"""
         try:
             full_path = os.path.join(settings.UPLOAD_DIR, filepath)
-            async with aiofiles.open(full_path, 'r') as f:
+            
+            # Check file extension
+            ext = os.path.splitext(filepath)[1].lower()
+            
+            # For binary files (PDF, Excel), return metadata instead
+            if ext in ['.pdf', '.xlsx', '.xls']:
+                return f"Binary file: {filepath}. Use file processors or check files_context for extracted data."
+            
+            # For text files, read normally
+            async with aiofiles.open(full_path, 'r', encoding='utf-8') as f:
                 content = await f.read()
             return content
+        except UnicodeDecodeError:
+            return f"Binary file: {filepath}. Cannot read as text. Check files_context for processed data."
         except Exception as e:
             return f"Error reading file: {str(e)}"
     
@@ -29,6 +40,9 @@ async def create_file_tools() -> List[Tool]:
             
             filepath, content = parts
             full_path = os.path.join(settings.UPLOAD_DIR, filepath)
+            
+            # Create directory if needed
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
             
             async with aiofiles.open(full_path, 'w') as f:
                 await f.write(content)
@@ -49,7 +63,7 @@ async def create_file_tools() -> List[Tool]:
     return [
         Tool(
             name="read_file",
-            description="Read contents of a file. Input is the filepath.",
+            description="Read contents of a TEXT file (.txt, .py, .json). Binary files return metadata.",
             func=lambda x: read_file_func(x),
             coroutine=read_file_func
         ),

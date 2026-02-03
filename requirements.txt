@@ -32,4 +32,22 @@ aiofiles
 # HTTP Client
 httpx
 
+# Numerical & Data
 numpy
+
+
+reportlab
+matplotlib
+pillow
+
+# Service Deployment
+streamlit
+gradio
+
+# Process Management
+psutil
+
+httpx
+requests
+
+cryptography

@@ -2,6 +2,7 @@ from .base import BaseFileProcessor
 from .excel_processor import ExcelProcessor
 from .csv_processor import CSVProcessor
 from .pdf_processor import PDFProcessor
+from .txt_processor import TXTProcessor
 
 class FileProcessorFactory:
     @staticmethod
@@ -10,7 +11,8 @@ class FileProcessorFactory:
             '.xlsx': ExcelProcessor(),
             '.xls': ExcelProcessor(),
             '.csv': CSVProcessor(),
-            '.pdf': PDFProcessor()
+            '.pdf': PDFProcessor(),
+            '.txt': TXTProcessor()  # ADD THIS
         }
         
         processor = processors.get(file_extension.lower())
